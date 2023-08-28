@@ -1,0 +1,14 @@
+cc_binary(
+    name = "w2c2",
+    srcs = glob([
+        "**/*.c",
+        "**/*.h",
+    ], exclude = ["test.c"]),
+    visibility = ["//visibility:public"],
+)
+
+cc_library(
+    name = "w2c2_base",
+    hdrs = ["w2c2_base.h"],
+    visibility = ["//visibility:public"],
+)

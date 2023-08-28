@@ -1,8 +1,10 @@
 #ifndef W2C2_WASI_H
 #define W2C2_WASI_H
-
+#ifndef BAZEL
 #include "../w2c2/w2c2_base.h"
-
+#else
+#include "w2c2/w2c2_base.h"
+#endif
 #ifdef __MSL__
 #include <stat.h>
 typedef long ssize_t;

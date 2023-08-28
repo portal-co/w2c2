@@ -12,10 +12,12 @@
 #include <assert.h>
 
 #ifndef __bool_true_false_are_defined
+#ifndef __cplusplus
 typedef enum bool {
     false = 0,
     true = 1
 } bool;
+#endif
 #endif
 
 typedef unsigned char U8;
@@ -520,7 +522,7 @@ wasmMemoryAllocate(
     U32 maxPages
 ) {
     U32 size = initialPages * WASM_PAGE_SIZE;
-    memory->data = calloc(size, 1);
+    memory->data = (U8*)calloc(size, 1);
     memory->size = size;
     memory->pages = initialPages;
     memory->maxPages = maxPages;
@@ -564,7 +566,7 @@ wasmMemoryGrow(
         U32 oldSize = oldPages * WASM_PAGE_SIZE;
         U32 newSize = newPages * WASM_PAGE_SIZE;
         U32 deltaSize = delta * WASM_PAGE_SIZE;
-        U8* newData = realloc(memory->data, newSize);
+        U8* newData = (U8*)realloc((void*)memory->data, newSize);
         if (newData == NULL) {
             return (U32) -1;
         }
@@ -739,7 +741,7 @@ wasmTableAllocate(
 ) {
     table->size = size;
     table->maxSize = maxSize;
-    table->data = calloc(size, sizeof(wasmFunc));
+    table->data = (wasmFunc*)calloc(size, sizeof(wasmFunc));
 }
 
 static

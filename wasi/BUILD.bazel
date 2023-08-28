@@ -1,0 +1,8 @@
+cc_library(
+    name = "wasi",
+    hdrs = ["wasi.h"],
+    srcs = ["wasi.c"],
+    deps = ["//w2c2:w2c2_base"],
+    local_defines = ["BAZEL=","HAS_UNISTD=1","HAS_SYSTIME=1","HAS_TIMESPEC=1"],
+    visibility = ["//visibility:public"],
+)

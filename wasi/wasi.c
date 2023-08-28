@@ -7,6 +7,7 @@
 
 #if HAS_UNISTD
 #include <unistd.h>
+#include <time.h>
 #endif /* HAS_UNISTD */
 
 #ifdef _MSC_VER
@@ -400,8 +401,7 @@ tracePrintf(const char* fmt, ...) {
 #endif
 
 extern wasmMemory* wasiMemory(void* instance);
-
-static WASI wasi;
+WASI wasi;
 
 #ifndef O_DSYNC
 #ifdef O_SYNC
@@ -1867,18 +1867,18 @@ wasiClockTimeGet(
                 break;
             }
 #endif
-#ifdef _POSIX_CPUTIME
-            case WASI_CLOCK_PROCESS_CPUTIME_ID: {
-                nativeClockID = CLOCK_PROCESS_CPUTIME_ID;
-                break;
-            }
-#endif
-#ifdef _POSIX_THREAD_CPUTIME
-            case WASI_CLOCK_THREAD_CPUTIME_ID: {
-                nativeClockID = CLOCK_THREAD_CPUTIME_ID;
-                break;
-            }
-#endif
+// #ifdef _POSIX_CPUTIME
+//             case WASI_CLOCK_PROCESS_CPUTIME_ID: {
+//                 nativeClockID = CLOCK_PROCESS_CPUTIME_ID;
+//                 break;
+//             }
+// #endif
+// #ifdef _POSIX_THREAD_CPUTIME
+//             case WASI_CLOCK_THREAD_CPUTIME_ID: {
+//                 nativeClockID = CLOCK_THREAD_CPUTIME_ID;
+//                 break;
+//             }
+// #endif
             default: {
                 WASI_TRACE(("clock_time_get: invalid clock ID"));
                 return WASI_ERRNO_INVAL;
@@ -2141,18 +2141,18 @@ wasiClockResGet(
                 break;
             }
 #endif
-#ifdef _POSIX_CPUTIME
-            case WASI_CLOCK_PROCESS_CPUTIME_ID: {
-                nativeClockID = CLOCK_PROCESS_CPUTIME_ID;
-                break;
-            }
-#endif
-#ifdef _POSIX_THREAD_CPUTIME
-            case WASI_CLOCK_THREAD_CPUTIME_ID: {
-                nativeClockID = CLOCK_THREAD_CPUTIME_ID;
-                break;
-            }
-#endif
+// #ifdef _POSIX_CPUTIME
+//             case WASI_CLOCK_PROCESS_CPUTIME_ID: {
+//                 nativeClockID = CLOCK_PROCESS_CPUTIME_ID;
+//                 break;
+//             }
+// #endif
+// #ifdef _POSIX_THREAD_CPUTIME
+//             case WASI_CLOCK_THREAD_CPUTIME_ID: {
+//                 nativeClockID = CLOCK_THREAD_CPUTIME_ID;
+//                 break;
+//             }
+// #endif
             default: {
                 WASI_TRACE(("clock_res_get: invalid clock ID"));
                 return WASI_ERRNO_INVAL;
