@@ -26,6 +26,10 @@ typedef long ssize_t;
 #include <dirent.h>
 #endif
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 typedef struct WasiFileDescriptor {
     int fd;
     DIR* dir;
@@ -638,5 +642,9 @@ void
 wasiFromNativePath(
     char *path
 );
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* W2C2_WASI_H */

@@ -2,7 +2,7 @@
 
 const char*
 wasmSectionIDDescription(
-    WasmSectionID sectionID
+    const WasmSectionID sectionID
 ) {
     switch (sectionID) {
         case wasmSectionIDCustom:
@@ -29,6 +29,8 @@ wasmSectionIDDescription(
             return "code section";
         case wasmSectionIDData:
             return "data section";
+        case wasmSectionIDDataCount:
+            return "data count section";
         default:
             return "unknown section";
     }
@@ -36,7 +38,7 @@ wasmSectionIDDescription(
 
 const char*
 wasmNameSubsectionIDDescription(
-    WasmNameSubsectionID subsectionID
+    const WasmNameSubsectionID subsectionID
 ) {
     switch (subsectionID) {
         case wasmNameSubsectionIDModuleName:

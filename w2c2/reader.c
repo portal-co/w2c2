@@ -1,6 +1,7 @@
 #include <stddef.h>
 #include <stdlib.h>
 #include <stdio.h>
+
 #include "reader.h"
 #include "section.h"
 #include "opcode.h"
@@ -10,6 +11,7 @@
 #include "elementsegment.h"
 #include "debug.h"
 #include "name.h"
+#include "sha1.h"
 
 static const U8 wasmMagic[] = {
     0x00, 0x61, 0x73, 0x6D,
@@ -18,7 +20,7 @@ static const U8 wasmMagic[] = {
 
 const char*
 wasmModuleReaderErrorMessage(
-    WasmModuleReaderError* error
+    const WasmModuleReaderError* error
 ) {
     switch (error->code) {
         case wasmModuleReaderInvalidMagic:
@@ -71,8 +73,8 @@ wasmModuleReaderErrorMessage(
             return "invalid export section export name";
         case wasmModuleReaderInvalidExportSectionExportKind:
             return "invalid export section export kind";
-        case wasmModuleReaderInvalidExportSectionIndex:
-            return "invalid export section index";
+        case wasmModuleReaderInvalidExportSectionExportIndex:
+            return "invalid export section export index";
         case wasmModuleReaderInvalidGlobalSectionGlobalCount:
             return "invalid global section global count";
         case wasmModuleReaderInvalidGlobalSectionMutabilityIndicator:
@@ -89,12 +91,16 @@ wasmModuleReaderErrorMessage(
             return "invalid limit maximum";
         case wasmModuleReaderInvalidDataSectionDataSegmentCount:
             return "invalid data section data segment count";
+        case wasmModuleReaderInvalidDataSectionKind:
+            return "invalid data section kind";
         case wasmModuleReaderInvalidDataSectionMemoryIndex:
             return "invalid data section memory index";
         case wasmModuleReaderInvalidDataSectionOffsetExpression:
             return "invalid data section offset expression";
         case wasmModuleReaderInvalidDataSectionBytes:
             return "invalid data section bytes";
+        case wasmModuleReaderInvalidDataCountSectionDataCount:
+            return "invalid data count section data count";
         case wasmModuleReaderInvalidTableSectionTableCount:
             return "invalid table section table count";
         case wasmModuleReaderInvalidTableSectionTableType:
@@ -165,11 +171,11 @@ static
 WasmValueType*
 wasmReadValueTypes(
     WasmModuleReader* reader,
-    U32 count,
+    const U32 count,
     WasmModuleReaderError** error
 ) {
     /* Allocate value type array */
-    WasmValueType* valueTypes = calloc(sizeof(WasmValueType) * count, 1);
+    WasmValueType* valueTypes = calloc(count, sizeof(WasmValueType));
     if (valueTypes == NULL) {
         static WasmModuleReaderError wasmModuleReaderError = {
             wasmModuleReaderAllocationFailed
@@ -182,9 +188,9 @@ wasmReadValueTypes(
     {
         U32 valueTypeIndex = 0;
         for (; valueTypeIndex < count; valueTypeIndex++) {
-            WasmValueType valueType = wasmModuleReadValueType(reader, error);
+            const WasmValueType valueType = wasmModuleReadValueType(reader, error);
             if (*error != NULL) {
-                return NULL;
+                goto fail;
             }
             valueTypes[valueTypeIndex] = valueType;
         }
@@ -192,6 +198,10 @@ wasmReadValueTypes(
 
     *error = NULL;
     return valueTypes;
+
+fail:
+    free(valueTypes);
+    return NULL;
 }
 
 /* wasmFunctionTypeIndicator is the byte used to indicate a function type in the WASM binary */
@@ -243,13 +253,13 @@ wasmReadFunctionType(
             wasmModuleReaderInvalidFunctionTypeResultCount
         };
         *error = &wasmModuleReaderError;
-        return;
+        goto fail;
     }
 
     /* Read result types */
     resultTypes = wasmReadValueTypes(reader, resultCount, error);
     if (*error != NULL) {
-        return;
+        goto fail;
     }
 
     *error = NULL;
@@ -258,6 +268,11 @@ wasmReadFunctionType(
     result->parameterTypes = parameterTypes;
     result->resultCount = resultCount;
     result->resultTypes = resultTypes;
+
+    return;
+
+fail:
+    free(parameterTypes);
 }
 
 static
@@ -311,20 +326,18 @@ wasmFunctionNameEntryCompareNames(
     const void* a,
     const void* b
 ) {
-    return strcmp(
-        ((const WasmFunctionNameEntry*)a)->name,
-        ((const WasmFunctionNameEntry*)b)->name
-    );
+    const WasmFunctionNameEntry* entryA = a;
+    const WasmFunctionNameEntry* entryB = b;
+    return strcmp(entryA->name, entryB->name);
 }
 
 static
 void
 wasmFunctionNamesRemoveDuplicates(
-    WasmNames* functionNames,
+    const WasmNames* functionNames,
     WasmModuleReaderError** error
 ) {
-
-    size_t functionNameCount = functionNames->length;
+    const size_t functionNameCount = functionNames->length;
     U32 functionNameIndex = 0;
 
     WasmFunctionNameEntry* entries = calloc(functionNameCount, sizeof(WasmFunctionNameEntry));
@@ -372,10 +385,10 @@ static
 void
 wasmReadNameSection(
     WasmModuleReader* reader,
-    U32 sectionSize,
+    const U32 sectionSize,
     WasmModuleReaderError** error
 ) {
-    U8* end = reader->buffer.data + sectionSize;
+    const U8* end = reader->buffer.data + sectionSize;
 
     while (reader->buffer.data < end) {
         U8 subsectionID = 0;
@@ -491,8 +504,8 @@ wasmReadCustomSection(
     WasmModuleReaderError** error
 ) {
     char* name = NULL;
-    U8* start = reader->buffer.data;
-    U8* end = NULL;
+    const U8* start = reader->buffer.data;
+    const U8* end = NULL;
 
     /* Read name */
     if (!wasmReadName(&reader->buffer, &name)) {
@@ -518,7 +531,7 @@ wasmReadCustomSection(
                 wasmModuleReaderDebugSectionAppendFailed
             };
             *error = &wasmModuleReaderError;
-            return;
+            goto fail;
         }
 
         bufferSkip(&reader->buffer, sectionSize);
@@ -526,14 +539,20 @@ wasmReadCustomSection(
     } else if (reader->debug && strcmp(name, wasmNameSectionName) == 0) {
         wasmReadNameSection(reader, sectionSize, error);
         if (*error != NULL) {
-            return;
+            goto fail;
         }
+        free(name);
     } else {
         fprintf(stderr, "w2c2: skipping custom section '%s' (size %u)\n", name, sectionSize);
         bufferSkip(&reader->buffer, sectionSize);
+        free(name);
     }
 
     *error = NULL;
+    return;
+
+fail:
+    free(name);
 }
 
 static
@@ -557,7 +576,7 @@ wasmReadTypeSection(
     }
 
     /* Allocate function type array */
-    functionTypes = calloc(sizeof(WasmFunctionType) * typeCount, 1);
+    functionTypes = calloc(typeCount, sizeof(WasmFunctionType));
     if (functionTypes == NULL) {
         static WasmModuleReaderError wasmModuleReaderError = {
             wasmModuleReaderAllocationFailed
@@ -571,8 +590,7 @@ wasmReadTypeSection(
         WasmFunctionType functionType = wasmEmptyFunctionType;
         wasmReadFunctionType(reader, &functionType, error);
         if (*error != NULL) {
-            free(functionTypes);
-            return;
+            goto fail;
         }
         functionTypes[typeIndex] = functionType;
     }
@@ -581,6 +599,11 @@ wasmReadTypeSection(
 
     reader->module->functionTypes.count = typeCount;
     reader->module->functionTypes.functionTypes = functionTypes;
+
+    return;
+
+fail:
+    free(functionTypes);
 }
 
 static
@@ -594,7 +617,7 @@ wasmReadGlobalType(
     U8 mutabilityIndicator = 0;
 
     /* Read value type */
-    WasmValueType valueType = wasmModuleReadValueType(reader, error);
+    const WasmValueType valueType = wasmModuleReadValueType(reader, error);
     if (*error != NULL) {
         return result;
     }
@@ -664,7 +687,7 @@ wasmReadGlobalImport(
     WasmGlobalImport import = wasmEmptyGlobalImport;
 
     /* Read global type */
-    WasmGlobalType globalType = wasmReadGlobalType(reader, error);
+    const WasmGlobalType globalType = wasmReadGlobalType(reader, error);
     if (*error != NULL) {
         return;
     }
@@ -690,6 +713,7 @@ wasmReadLimits(
     WasmModuleReader* reader,
     U32* min,
     U32* max,
+    bool *shared,
     WasmModuleReaderError** error
 ) {
     U8 kindIndicator = 0;
@@ -715,6 +739,7 @@ wasmReadLimits(
     switch (kindIndicator) {
         case 0x0: {
             *max = 0;
+            *shared = false;
             break;
         }
         case 0x1: {
@@ -726,6 +751,19 @@ wasmReadLimits(
                 *error = &wasmModuleReaderError;
                 return;
             }
+            *shared = false;
+            break;
+        }
+        case 0x3: {
+            /* Read max */
+            if (leb128ReadU32(&reader->buffer, max) == 0) {
+                static WasmModuleReaderError wasmModuleReaderError = {
+                    wasmModuleReaderInvalidLimitMaximum
+                };
+                *error = &wasmModuleReaderError;
+                return;
+            }
+            *shared = true;
             break;
         }
         default: {
@@ -746,9 +784,10 @@ wasmReadMemoryType(
     WasmModuleReader* reader,
     U32* min,
     U32* max,
+    bool* shared,
     WasmModuleReaderError** error
 ) {
-    wasmReadLimits(reader, min, max, error);
+    wasmReadLimits(reader, min, max, shared, error);
     if (*error != NULL) {
         return;
     }
@@ -770,7 +809,7 @@ wasmReadMemoryImport(
     import.module = module;
     import.name = name;
 
-    wasmReadMemoryType(reader, &import.min, &import.max, error);
+    wasmReadMemoryType(reader, &import.min, &import.max, &import.shared, error);
     if (*error != NULL) {
         return;
     }
@@ -792,6 +831,7 @@ wasmReadTableType(
     WasmModuleReader* reader,
     U32* min,
     U32* max,
+    bool* shared,
     WasmModuleReaderError** error
 ) {
     U8 tableType = 0;
@@ -808,7 +848,7 @@ wasmReadTableType(
         return;
     }
 
-    wasmReadLimits(reader, min, max, error);
+    wasmReadLimits(reader, min, max, shared, error);
     if (*error != NULL) {
         return;
     }
@@ -832,7 +872,7 @@ wasmReadTableImport(
     import.module = module;
     import.name = name;
 
-    wasmReadTableType(reader, &import.min, &import.max, error);
+    wasmReadTableType(reader, &import.min, &import.max, &import.shared, error);
     if (*error != NULL) {
         return;
     }
@@ -864,7 +904,7 @@ wasmReadImport(
             wasmModuleReaderInvalidImportSectionImportModule
         };
         *error = &wasmModuleReaderError;
-        return;
+        goto fail;
     }
 
     /* Read name */
@@ -873,7 +913,7 @@ wasmReadImport(
             wasmModuleReaderInvalidImportSectionImportName
         };
         *error = &wasmModuleReaderError;
-        return;
+        goto fail;
     }
 
     /* Read import kind */
@@ -884,35 +924,35 @@ wasmReadImport(
             wasmModuleReaderInvalidImportSectionImportKind
         };
         *error = &wasmModuleReaderError;
-        return;
+        goto fail;
     }
 
     switch (kindIndicator) {
         case wasmImportKindFunction: {
             wasmReadFunctionImport(reader, module, name, error);
             if (*error != NULL) {
-                return;
+                goto fail;
             }
             break;
         }
         case wasmImportKindGlobal: {
             wasmReadGlobalImport(reader, module, name, error);
             if (*error != NULL) {
-                return;
+                goto fail;
             }
             break;
         }
         case wasmImportKindMemory: {
             wasmReadMemoryImport(reader, module, name, error);
             if (*error != NULL) {
-                return;
+                goto fail;
             }
             break;
         }
         case wasmImportKindTable: {
             wasmReadTableImport(reader, module, name, error);
             if (*error != NULL) {
-                return;
+                goto fail;
             }
             break;
         }
@@ -921,11 +961,16 @@ wasmReadImport(
                 wasmModuleReaderInvalidImportSectionImportKind
             };
             *error = &wasmModuleReaderError;
-            return;
+            goto fail;
         }
     }
 
     *error = NULL;
+    return;
+
+fail:
+    free(module);
+    free(name);
 }
 
 static
@@ -981,7 +1026,7 @@ wasmReadFunctionSection(
     }
 
     /* Allocate function array */
-    functions = calloc(sizeof(WasmFunction) * functionCount, 1);
+    functions = calloc(functionCount, sizeof(WasmFunction));
     if (functions == NULL) {
         static WasmModuleReaderError wasmModuleReaderError = {
             wasmModuleReaderAllocationFailed
@@ -1001,7 +1046,7 @@ wasmReadFunctionSection(
                 wasmModuleReaderInvalidFunctionTypeIndex
             };
             *error = &wasmModuleReaderError;
-            return;
+            goto fail;
         }
 
         /* Check function type index does not exceed function type count */
@@ -1010,7 +1055,7 @@ wasmReadFunctionSection(
                 wasmModuleReaderInvalidFunctionTypeIndex
             };
             *error = &wasmModuleReaderError;
-            return;
+            goto fail;
         }
 
         function.functionTypeIndex = functionTypeIndex;
@@ -1021,6 +1066,11 @@ wasmReadFunctionSection(
 
     reader->module->functions.count = functionCount;
     reader->module->functions.functions = functions;
+
+    return;
+
+fail:
+    free(functions);
 }
 
 static
@@ -1042,7 +1092,7 @@ wasmReadConstantExpr(
         }
         case wasmOpcodeGlobalGet: {
             WasmGlobalInstruction instruction;
-            MUST (wasmGlobalInstructionRead(buffer, opcode, &instruction))
+            MUST (wasmGlobalInstructionRead(buffer, &instruction))
             break;
         }
         case wasmOpcodeEnd:
@@ -1079,7 +1129,7 @@ wasmReadMemorySection(
     }
 
     /* Allocate memories array */
-    memories = calloc(sizeof(WasmMemory) * memoryCount, 1);
+    memories = calloc(memoryCount, sizeof(WasmMemory));
     if (memories == NULL) {
         static WasmModuleReaderError wasmModuleReaderError = {
             wasmModuleReaderAllocationFailed
@@ -1091,9 +1141,9 @@ wasmReadMemorySection(
     /* Read memories */
     for (; memoryIndex < memoryCount; memoryIndex++) {
         WasmMemory memory = wasmEmptyMemory;
-        wasmReadMemoryType(reader, &memory.min, &memory.max, error);
+        wasmReadMemoryType(reader, &memory.min, &memory.max, &memory.shared, error);
         if (*error != NULL) {
-            return;
+            goto fail;
         }
         memories[memoryIndex] = memory;
     }
@@ -1102,6 +1152,11 @@ wasmReadMemorySection(
 
     reader->module->memories.count = memoryCount;
     reader->module->memories.memories = memories;
+
+    return;
+
+fail:
+    free(memories);
 }
 
 static
@@ -1114,7 +1169,7 @@ wasmReadGlobal(
     Buffer init;
 
     /* Read global type */
-    WasmGlobalType type = wasmReadGlobalType(reader, error);
+    const WasmGlobalType type = wasmReadGlobalType(reader, error);
     if (*error != NULL) {
         return;
     }
@@ -1157,7 +1212,7 @@ wasmReadGlobalSection(
     }
 
     /* Allocate globals array */
-    globals = calloc(sizeof(WasmGlobal) * globalCount, 1);
+    globals = calloc(globalCount, sizeof(WasmGlobal));
     if (globals == NULL) {
         static WasmModuleReaderError wasmModuleReaderError = {
             wasmModuleReaderAllocationFailed
@@ -1171,7 +1226,7 @@ wasmReadGlobalSection(
         WasmGlobal global = wasmEmptyGlobal;
         wasmReadGlobal(reader, &global, error);
         if (*error != NULL) {
-            return;
+            goto fail;
         }
         globals[globalIndex] = global;
     }
@@ -1180,6 +1235,11 @@ wasmReadGlobalSection(
 
     reader->module->globals.count = globalCount;
     reader->module->globals.globals = globals;
+
+    return;
+
+fail:
+    free(globals);
 }
 
 static
@@ -1210,16 +1270,16 @@ wasmReadExport(
             wasmModuleReaderInvalidExportSectionExportKind
         };
         *error = &wasmModuleReaderError;
-        return;
+        goto fail;
     }
 
     /* Read export index */
     if (leb128ReadU32(&reader->buffer, &index) == 0) {
         static WasmModuleReaderError wasmModuleReaderError = {
-            wasmModuleReaderInvalidExportSectionIndex
+            wasmModuleReaderInvalidExportSectionExportIndex
         };
         *error = &wasmModuleReaderError;
-        return;
+        goto fail;
     }
 
     *error = NULL;
@@ -1227,6 +1287,11 @@ wasmReadExport(
     result->name = name;
     result->kind = kindIndicator;
     result->index = index;
+
+    return;
+
+fail:
+    free(name);
 }
 
 static
@@ -1242,14 +1307,14 @@ wasmReadExportSection(
     /* Read export count */
     if (leb128ReadU32(&reader->buffer, &exportCount) == 0) {
         static WasmModuleReaderError wasmModuleReaderError = {
-            wasmModuleReaderInvalidTypeSectionTypeCount
+            wasmModuleReaderInvalidExportSectionExportCount
         };
         *error = &wasmModuleReaderError;
         return;
     }
 
     /* Allocate export array */
-    exports = calloc(sizeof(WasmExport) * exportCount, 1);
+    exports = calloc(exportCount, sizeof(WasmExport));
     if (exports == NULL) {
         static WasmModuleReaderError wasmModuleReaderError = {
             wasmModuleReaderAllocationFailed
@@ -1260,14 +1325,33 @@ wasmReadExportSection(
 
     /* Read exports */
     {
+        const size_t functionImportCount = reader->module->functionImports.length;
+        WasmFunctions functions = reader->module->functions;
+        const U32 functionCount = assertSizeU32(functionImportCount) + functions.count;
+
         U32 exportIndex = 0;
         for (; exportIndex < exportCount; exportIndex++) {
             WasmExport export = wasmEmptyExport;
             wasmReadExport(reader, &export, error);
             if (*error != NULL) {
-                return;
+                goto fail;
             }
             exports[exportIndex] = export;
+
+            if (export.kind == wasmExportKindFunction) {
+                if (export.index >= functionCount) {
+                    static WasmModuleReaderError wasmModuleReaderError = {
+                        wasmModuleReaderInvalidExportSectionExportIndex
+                    };
+                    *error = &wasmModuleReaderError;
+                    goto fail;
+                }
+
+                if (export.index >= functionImportCount) {
+                    size_t functionIndex = export.index - functionImportCount;
+                    functions.functions[functionIndex].exportName = export.name;
+                }
+            }
         }
     }
 
@@ -1275,6 +1359,11 @@ wasmReadExportSection(
 
     reader->module->exports.count = exportCount;
     reader->module->exports.exports = exports;
+
+    return;
+
+fail:
+    free(exports);
 }
 
 static
@@ -1290,7 +1379,7 @@ wasmReadCodeLocalsDeclarations(
     MUST (leb128ReadU32(&reader->buffer, &declarationCount) > 0)
 
     if (declarationCount > 0) {
-        declarations = calloc(sizeof(struct WasmLocalsDeclaration) * declarationCount, 1);
+        declarations = calloc(declarationCount, sizeof(WasmLocalsDeclaration));
         MUST (declarations != NULL)
 
         {
@@ -1298,8 +1387,13 @@ wasmReadCodeLocalsDeclarations(
             for (; declarationIndex < declarationCount; declarationIndex++) {
                 WasmLocalsDeclaration declaration = {0, 0};
 
-                MUST (leb128ReadU32(&reader->buffer, &declaration.count) > 0)
-                MUST (wasmReadValueType(&reader->buffer, &declaration.type))
+                if (leb128ReadU32(&reader->buffer, &declaration.count) <= 0) {
+                    goto fail;
+                }
+
+                if (!wasmReadValueType(&reader->buffer, &declaration.type)) {
+                    goto fail;
+                }
 
                 declarations[declarationIndex] = declaration;
             }
@@ -1310,6 +1404,10 @@ wasmReadCodeLocalsDeclarations(
     result->declarationCount = declarationCount;
 
     return true;
+
+fail:
+    free(declarations);
+    return false;
 }
 
 static
@@ -1322,7 +1420,7 @@ wasmReadCodeSection(
     U32 functionCount = 0;
     U32 functionIndex = 0;
 
-    size_t codeStart = reader->module->length - reader->buffer.length;
+    const size_t codeStart = reader->module->length - reader->buffer.length;
 
     /* Read function count */
     if (leb128ReadU32(&reader->buffer, &functionCount) == 0) {
@@ -1368,6 +1466,8 @@ wasmReadCodeSection(
         /* Read local declarations */
         {
             const U8* localsDeclarationsOffset = reader->buffer.data;
+
+            SHA1(localsDeclarationsOffset, codeSize, function->hash);
 
             if (!wasmReadCodeLocalsDeclarations(reader, &function->localsDeclarations)) {
                 static WasmModuleReaderError wasmModuleReaderError = {
@@ -1427,29 +1527,67 @@ wasmReadDataSegment(
     WasmDataSegment* result,
     WasmModuleReaderError** error
 ) {
+    U8 kind = 0;
+    bool readMemoryIndex = false;
+    bool readOffsetExpression = false;
     U32 memoryIndex = 0;
-    Buffer offset;
+    Buffer offset = {NULL, 0};
     Buffer bytes = {NULL, 0};
 
-    /* Read memory index */
-    if (leb128ReadU32(&reader->buffer, &memoryIndex) == 0) {
+    if (!bufferReadByte(&reader->buffer, &kind)) {
         static WasmModuleReaderError wasmModuleReaderError = {
-            wasmModuleReaderInvalidDataSectionMemoryIndex
+            wasmModuleReaderInvalidDataSectionKind
         };
         *error = &wasmModuleReaderError;
         return;
+    }
+
+    switch (kind) {
+        case 0x0: {
+            readMemoryIndex = false;
+            readOffsetExpression = true;
+            break;
+        }
+        case 0x1:
+            readMemoryIndex = false;
+            readOffsetExpression = false;
+            break;
+        case 0x2:
+            readMemoryIndex = true;
+            readOffsetExpression = true;
+            break;
+        default: {
+            static WasmModuleReaderError wasmModuleReaderError = {
+                wasmModuleReaderInvalidDataSectionKind
+            };
+            *error = &wasmModuleReaderError;
+            return;
+        }
+    }
+
+    /* Read memory index */
+    if (readMemoryIndex) {
+        if (leb128ReadU32(&reader->buffer, &memoryIndex) == 0) {
+            static WasmModuleReaderError wasmModuleReaderError = {
+                wasmModuleReaderInvalidDataSectionMemoryIndex
+            };
+            *error = &wasmModuleReaderError;
+            return;
+        }
     }
 
     /* Read offset expression */
-    offset = reader->buffer;
-    if (!wasmReadConstantExpr(&reader->buffer)) {
-        static WasmModuleReaderError wasmModuleReaderError = {
-            wasmModuleReaderInvalidDataSectionOffsetExpression
-        };
-        *error = &wasmModuleReaderError;
-        return;
+    if (readOffsetExpression) {
+        offset = reader->buffer;
+        if (!wasmReadConstantExpr(&reader->buffer)) {
+            static WasmModuleReaderError wasmModuleReaderError = {
+                wasmModuleReaderInvalidDataSectionOffsetExpression
+            };
+            *error = &wasmModuleReaderError;
+            return;
+        }
+        offset.length -= reader->buffer.length;
     }
-    offset.length -= reader->buffer.length;
 
     /* Read bytes */
     if (!wasmReadBytes(&reader->buffer, &bytes)) {
@@ -1487,7 +1625,7 @@ wasmReadDataSection(
     }
 
     /* Allocate data segment array */
-    dataSegments = calloc(sizeof(WasmDataSegment) * dataSegmentCount, 1);
+    dataSegments = calloc(dataSegmentCount, sizeof(WasmDataSegment));
     if (dataSegments == NULL) {
         static WasmModuleReaderError wasmModuleReaderError = {
             wasmModuleReaderAllocationFailed
@@ -1503,7 +1641,7 @@ wasmReadDataSection(
             WasmDataSegment dataSegment = wasmEmptyDataSegment;
             wasmReadDataSegment(reader, &dataSegment, error);
             if (*error != NULL) {
-                return;
+                goto fail;
             }
             dataSegments[dataSegmentIndex] = dataSegment;
         }
@@ -1513,6 +1651,32 @@ wasmReadDataSection(
 
     reader->module->dataSegments.count = dataSegmentCount;
     reader->module->dataSegments.dataSegments = dataSegments;
+
+    return;
+
+fail:
+    free(dataSegments);
+}
+
+static
+void
+wasmReadDataCountSection(
+    WasmModuleReader* reader,
+    U32 UNUSED(sectionSize),
+    WasmModuleReaderError** error
+) {
+    U32 dataCount = 0;
+
+    /* Read export count */
+    if (leb128ReadU32(&reader->buffer, &dataCount) == 0) {
+        static WasmModuleReaderError wasmModuleReaderError = {
+            wasmModuleReaderInvalidDataCountSectionDataCount
+        };
+        *error = &wasmModuleReaderError;
+        return;
+    }
+
+    *error = NULL;
 }
 
 static
@@ -1535,7 +1699,7 @@ wasmReadTableSection(
     }
 
     /* Allocate table segment array */
-    tables = calloc(sizeof(WasmTable) * tableCount, 1);
+    tables = calloc(tableCount, sizeof(WasmTable));
     if (tables == NULL) {
         static WasmModuleReaderError wasmModuleReaderError = {
             wasmModuleReaderAllocationFailed
@@ -1549,9 +1713,9 @@ wasmReadTableSection(
         U32 tableIndex = 0;
         for (; tableIndex < tableCount; tableIndex++) {
             WasmTable table = wasmEmptyTable;
-            wasmReadTableType(reader, &table.min, &table.max, error);
+            wasmReadTableType(reader, &table.min, &table.max, &table.shared, error);
             if (*error != NULL) {
-                return;
+                goto fail;
             }
             tables[tableIndex] = table;
         }
@@ -1561,6 +1725,11 @@ wasmReadTableSection(
 
     reader->module->tables.count = tableCount;
     reader->module->tables.tables = tables;
+
+    return;
+
+fail:
+    free(tables);
 }
 
 static
@@ -1605,7 +1774,7 @@ wasmReadElementSegment(
     }
 
     /* Allocate element segment array */
-    functionIndices = calloc(sizeof(U32) * functionIndexCount, 1);
+    functionIndices = calloc(functionIndexCount, sizeof(U32));
     if (functionIndices == NULL) {
         static WasmModuleReaderError wasmModuleReaderError = {
             wasmModuleReaderAllocationFailed
@@ -1624,7 +1793,7 @@ wasmReadElementSegment(
                     wasmModuleReaderInvalidElementSectionFunctionIndex
                 };
                 *error = &wasmModuleReaderError;
-                return;
+                goto fail;
             }
             functionIndices[functionIndexIndex] = functionIndex;
         }
@@ -1636,6 +1805,11 @@ wasmReadElementSegment(
     result->offset = offset;
     result->functionIndexCount = functionIndexCount;
     result->functionIndices = functionIndices;
+
+    return;
+
+fail:
+    free(functionIndices);
 }
 
 static
@@ -1658,7 +1832,7 @@ wasmReadElementSection(
     }
 
     /* Allocate element segment array */
-    elementSegments = calloc(sizeof(WasmElementSegment) * elementSegmentCount, 1);
+    elementSegments = calloc(elementSegmentCount, sizeof(WasmElementSegment));
     if (elementSegments == NULL) {
         static WasmModuleReaderError wasmModuleReaderError = {
             wasmModuleReaderAllocationFailed
@@ -1674,7 +1848,7 @@ wasmReadElementSection(
             WasmElementSegment elementSegment = wasmEmptyElementSegment;
             wasmReadElementSegment(reader, &elementSegment, error);
             if (*error != NULL) {
-                return;
+                goto fail;
             }
             elementSegments[elementSegmentIndex] = elementSegment;
         }
@@ -1684,6 +1858,11 @@ wasmReadElementSection(
 
     reader->module->elementSegments.count = elementSegmentCount;
     reader->module->elementSegments.elementSegments = elementSegments;
+
+    return;
+
+fail:
+    free(elementSegments);
 }
 
 static
@@ -1711,18 +1890,19 @@ wasmReadStartSection(
 }
 
 static WasmSectionReader wasmSectionReaders[] = {
-    /* wasmSectionIDCustom   */ wasmReadCustomSection,
-    /* wasmSectionIDType     */ wasmReadTypeSection,
-    /* wasmSectionIDImport   */ wasmReadImportSection,
-    /* wasmSectionIDFunction */ wasmReadFunctionSection,
-    /* wasmSectionIDTable    */ wasmReadTableSection,
-    /* wasmSectionIDMemory   */ wasmReadMemorySection,
-    /* wasmSectionIDGlobal   */ wasmReadGlobalSection,
-    /* wasmSectionIDExport   */ wasmReadExportSection,
-    /* wasmSectionIDStart    */ wasmReadStartSection,
-    /* wasmSectionIDElement  */ wasmReadElementSection,
-    /* wasmSectionIDCode     */ wasmReadCodeSection,
-    /* wasmSectionIDData     */ wasmReadDataSection,
+    /* wasmSectionIDCustom    */ wasmReadCustomSection,
+    /* wasmSectionIDType      */ wasmReadTypeSection,
+    /* wasmSectionIDImport    */ wasmReadImportSection,
+    /* wasmSectionIDFunction  */ wasmReadFunctionSection,
+    /* wasmSectionIDTable     */ wasmReadTableSection,
+    /* wasmSectionIDMemory    */ wasmReadMemorySection,
+    /* wasmSectionIDGlobal    */ wasmReadGlobalSection,
+    /* wasmSectionIDExport    */ wasmReadExportSection,
+    /* wasmSectionIDStart     */ wasmReadStartSection,
+    /* wasmSectionIDElement   */ wasmReadElementSection,
+    /* wasmSectionIDCode      */ wasmReadCodeSection,
+    /* wasmSectionIDData      */ wasmReadDataSection,
+    /* wasmSectionIDDataCount */ wasmReadDataCountSection
 };
 
 static
@@ -1734,7 +1914,7 @@ wasmModuleReadSection(
     U8 rawSectionID = 0;
     WasmSectionID sectionID = 0;
     U32 sectionSize = 0;
-    U32 sectionParsersCount = sizeof(wasmSectionReaders) / sizeof(wasmSectionReaders[0]);
+    const U32 sectionParsersCount = sizeof(wasmSectionReaders) / sizeof(wasmSectionReaders[0]);
 
     /* Read section ID */
     if (!bufferReadByte(&reader->buffer, &rawSectionID)) {
@@ -1757,11 +1937,11 @@ wasmModuleReadSection(
     }
 
     if (sectionID < sectionParsersCount) {
-        WasmSectionReader wasmSectionReader = wasmSectionReaders[sectionID];
+        const WasmSectionReader wasmSectionReader = wasmSectionReaders[sectionID];
         if (wasmSectionReader != NULL) {
-            U8* start = reader->buffer.data;
-            U8* end = NULL;
-            U8* expectedEnd = NULL;
+            const U8* start = reader->buffer.data;
+            const U8* end = NULL;
+            const U8* expectedEnd = NULL;
 
             wasmSectionReader(reader, sectionSize, error);
             if (*error != NULL) {
@@ -1786,7 +1966,12 @@ wasmModuleReadSection(
         }
     }
 
-    fprintf(stderr, "w2c2: skipping unsupported %s\n", wasmSectionIDDescription(sectionID));
+    fprintf(
+        stderr,
+        "w2c2: skipping unsupported %s (%d)\n",
+        wasmSectionIDDescription(sectionID),
+        sectionID
+    );
 
     bufferSkip(&reader->buffer, sectionSize);
 
@@ -1800,14 +1985,14 @@ wasmModuleRead(
 ) {
     WasmModule* module = NULL;
 
-    size_t length = reader->buffer.length;
+    const size_t length = reader->buffer.length;
 
     wasmModuleReadMagic(reader, error);
     if (*error != NULL) {
         return;
     }
 
-    module = calloc(sizeof(struct WasmModule), 1);
+    module = calloc(1, sizeof(WasmModule));
     if (module == NULL) {
         static WasmModuleReaderError wasmModuleReaderError = {
             wasmModuleReaderAllocationFailed
@@ -1825,7 +2010,7 @@ wasmModuleRead(
 
         wasmModuleReadSection(reader, error);
         if (*error != NULL) {
-            return;
+            goto fail;
         }
 
         *error = NULL;
@@ -1836,4 +2021,9 @@ wasmModuleRead(
     } else {
         module->debugLines = emptyWasmDebugLines;
     }
+
+    return;
+
+fail:
+    free(module);
 }

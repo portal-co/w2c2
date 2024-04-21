@@ -11,6 +11,12 @@
 
 #include <assert.h>
 
+#include <errno.h>
+
+#ifdef __cplusplus
+extern "C" {
+#else
+
 #ifndef __bool_true_false_are_defined
 #ifndef __cplusplus
 typedef enum bool {
@@ -18,6 +24,8 @@ typedef enum bool {
     true = 1
 } bool;
 #endif
+#endif
+
 #endif
 
 typedef unsigned char U8;
@@ -97,28 +105,58 @@ typedef double F64;
 #endif
 #endif /* WASM_ENDIAN */
 
-#if WASM_ENDIAN == WASM_BIG_ENDIAN
+#define swapU8(x) (x)
+
+#if WASM_ENDIAN == WASM_LITTLE_ENDIAN
+#define swapU16(x) (x)
+#define swapU32(x) (x)
+#define swapU64(x) (x)
+
+#elif WASM_ENDIAN == WASM_BIG_ENDIAN
+
+/*
+ * Use compiler byte-swapping intrinsics if they are available.
+ * 32-bit and 64-bit versions are available in Clang and GCC as of GCC 4.8.0.
+ */
+#if defined(__clang__) || (defined(__GNUC__) && ((__GNUC__ == 4 && __GNUC_MINOR__ >= 8) || __GNUC__ >= 5))
+
+#define swapU16(x) __builtin_bswap16(x)
+#define swapU32(x) __builtin_bswap32(x)
+#define swapU64(x) __builtin_bswap64(x)
+
+#elif defined(__APPLE__)
+
+#include <libkern/OSByteOrder.h>
+
+#define swapU16(x) OSSwapInt16(x)
+#define swapU32(x) OSSwapInt32(x)
+#define swapU64(x) OSSwapInt64(x)
+
+#else
+
 /*
  * Mask, and then shift.
  * Mask, and then shift.
  * Mask, and then shift.
  * Mask, and then shift.
  */
-#define swap32(x) ((((x) & 0xFF000000) >> 24) \
-                 | (((x) & 0x00FF0000) >> 8 ) \
-                 | (((x) & 0x0000FF00) << 8 ) \
-                 | (((x) & 0x000000FF) << 24))
-#define swap64(x) ((((x) & 0xff00000000000000ull) >> 56) \
-                 | (((x) & 0x00ff000000000000ull) >> 40) \
-                 | (((x) & 0x0000ff0000000000ull) >> 24) \
-                 | (((x) & 0x000000ff00000000ull) >> 8 ) \
-                 | (((x) & 0x00000000ff000000ull) << 8 ) \
-                 | (((x) & 0x0000000000ff0000ull) << 24) \
-                 | (((x) & 0x000000000000ff00ull) << 40) \
-                 | (((x) & 0x00000000000000ffull) << 56))
-#elif WASM_ENDIAN == WASM_LITTLE_ENDIAN
-#define swap32(x) (x)
-#define swap64(x) (x)
+#define swapU16(x) ((((x) & 0xFF00) >> 8) \
+                  | (((x) & 0x00FF) << 8))
+#define swapU32(x) ((((x) & 0xFF000000) >> 24) \
+                  | (((x) & 0x00FF0000) >> 8 ) \
+                  | (((x) & 0x0000FF00) << 8 ) \
+                  | (((x) & 0x000000FF) << 24))
+#define swapU64(x) ((((x) & 0xff00000000000000ull) >> 56) \
+                  | (((x) & 0x00ff000000000000ull) >> 40) \
+                  | (((x) & 0x0000ff0000000000ull) >> 24) \
+                  | (((x) & 0x000000ff00000000ull) >> 8 ) \
+                  | (((x) & 0x00000000ff000000ull) << 8 ) \
+                  | (((x) & 0x0000000000ff0000ull) << 24) \
+                  | (((x) & 0x000000000000ff00ull) << 40) \
+                  | (((x) & 0x00000000000000ffull) << 56))
+
+#endif
+
 #endif
 
 #ifdef _MSC_VER
@@ -144,7 +182,7 @@ typedef double F64;
 #endif
 
 #if defined(__GNUC__) && GCC_VERSION >= 20905
-#define UNUSED __attribute__((__unused__))
+#define UNUSED __attribute__((unused))
 #else
 #define UNUSED
 #endif
@@ -204,7 +242,7 @@ static
 W2C2_INLINE
 U32
 assertSizeU32(
-    size_t size
+    const size_t size
 ) {
     assert(size <= UINT32_MAX);
     return (U32) size;
@@ -214,14 +252,15 @@ typedef enum Trap {
     trapUnreachable,
     trapDivByZero,
     trapIntOverflow,
-    trapInvalidConversion
+    trapInvalidConversion,
+    trapAllocationFailed
 } Trap;
 
 static
 W2C2_INLINE
 const char*
 trapDescription(
-    Trap trap
+    const Trap trap
 ) {
     switch (trap) {
         case trapUnreachable:
@@ -232,6 +271,8 @@ trapDescription(
             return "int overflow";
         case trapInvalidConversion:
             return "invalid conversion";
+        case trapAllocationFailed:
+            return "allocation failed";
         default:
             return "unknown";
     }
@@ -404,7 +445,7 @@ static
 W2C2_INLINE
 U32
 I32_CTZ(
-    U32 x
+    const U32 x
 ) {
     return 32 - I32_CLZ(~x & (x - 1));
 }
@@ -419,7 +460,7 @@ static
 W2C2_INLINE
 U64
 I64_CTZ(
-    U64 x
+    const U64 x
 ) {
     return 64 - I64_CLZ(~x & (x - 1));
 }
@@ -505,28 +546,169 @@ DEFINE_REINTERPRET(i32_reinterpret_f32, F32, U32)
 DEFINE_REINTERPRET(f64_reinterpret_i64, U64, F64)
 DEFINE_REINTERPRET(i64_reinterpret_f64, F64, U64)
 
+#ifdef WASM_THREADS_PTHREADS
+#include <pthread.h>
+
+#define WASM_THREAD_TYPE pthread_t
+#define WASM_THREAD_CREATE(thread, func, arg) (pthread_create(thread, NULL, func, arg) == 0)
+#define WASM_THREAD_JOIN(thread) ((void)pthread_join(thread, NULL))
+
+#define WASM_MUTEX_TYPE pthread_mutex_t
+#define WASM_MUTEX_INIT(mutex) (pthread_mutex_init(mutex, NULL) == 0)
+#define WASM_MUTEX_FREE(mutex) ((void)pthread_mutex_destroy(mutex))
+#define WASM_MUTEX_LOCK(mutex) ((void)pthread_mutex_lock(mutex))
+#define WASM_MUTEX_UNLOCK(mutex) ((void)pthread_mutex_unlock(mutex))
+
+#define WASM_COND_TYPE pthread_cond_t
+#define WASM_COND_INIT(cond) (pthread_cond_init(cond, NULL) == 0)
+#define WASM_COND_FREE(cond) ((void)pthread_cond_destroy(cond))
+#define WASM_COND_WAIT(cond, mutex) ((void)pthread_cond_wait(cond, mutex))
+#define WASM_COND_RELATIVE_WAIT(cond, signal, timeout) wasmCondRelativeWait(cond, signal, timeout)
+#define WASM_COND_SIGNAL(cond) ((void)pthread_cond_signal(cond))
+
+#define NS_PER_S 1000000000
+
+static
+W2C2_INLINE
+bool
+WARN_UNUSED_RESULT
+wasmCondRelativeWait(
+    WASM_COND_TYPE* cond,
+    WASM_MUTEX_TYPE* mutex,
+    I64 relativeTimeout
+) {
+    struct timespec absoluteTimeout;
+    clock_gettime(CLOCK_REALTIME, &absoluteTimeout);
+    absoluteTimeout.tv_sec += (time_t)relativeTimeout / NS_PER_S;
+    absoluteTimeout.tv_nsec += (long int)relativeTimeout % NS_PER_S;
+    if (absoluteTimeout.tv_nsec >= NS_PER_S) {
+        absoluteTimeout.tv_nsec -= NS_PER_S;
+        absoluteTimeout.tv_sec++;
+    }
+    return pthread_cond_timedwait(cond, mutex, &absoluteTimeout) != ETIMEDOUT;
+}
+
+#elif defined(WASM_THREADS_WIN32)
+
+#include <windows.h>
+
+#define NS_PER_MS 100000
+
+#define WASM_THREAD_TYPE HANDLE
+#define WASM_THREAD_CREATE(thread, func, arg) wasmThreadCreate(thread, func, arg)
+#define WASM_THREAD_JOIN(thread) (WaitForSingleObject(thread, INFINITE), (void)CloseHandle(thread))
+
+#define WASM_MUTEX_TYPE CRITICAL_SECTION
+#define WASM_MUTEX_INIT(mutex) (InitializeCriticalSection(mutex), true)
+#define WASM_MUTEX_FREE(mutex) DeleteCriticalSection(mutex)
+#define WASM_MUTEX_LOCK(mutex) EnterCriticalSection(mutex)
+#define WASM_MUTEX_UNLOCK(mutex) LeaveCriticalSection(mutex)
+
+#define WASM_COND_TYPE CONDITION_VARIABLE
+#define WASM_COND_INIT(cond) (InitializeConditionVariable(cond), true)
+#define WASM_COND_FREE(cond) ((void)cond) /* NO-OP */
+#define WASM_COND_WAIT(cond, mutex) ((void)SleepConditionVariableCS(cond, mutex, INFINITE))
+#define WASM_COND_RELATIVE_WAIT(cond, signal, timeout) SleepConditionVariableCS(cond, signal, (DWORD)timeout / NS_PER_MS)
+#define WASM_COND_SIGNAL(cond) WakeConditionVariable(cond)
+
+typedef struct wasmWin32ThreadStartArg {
+    void* (*startFunc)(void*);
+    void* startFuncArg;
+} wasmWin32ThreadStartArg;
+
+static
+DWORD
+wasmWin32ThreadStart(
+    void *arg
+) {
+    wasmWin32ThreadStartArg* startArg = (wasmWin32ThreadStartArg*)arg;
+    void* (*startFunc)(void*) = startArg->startFunc;
+    void* startFuncArg = startArg->startFuncArg;
+
+    free(arg);
+
+    startFunc(startFuncArg);
+
+    return ERROR_SUCCESS;
+}
+
+static
+W2C2_INLINE
+bool
+WARN_UNUSED_RESULT
+wasmThreadCreate(
+    WASM_THREAD_TYPE* thread,
+    void* (*startFunc)(void*),
+    void* startFuncArg
+) {
+    wasmWin32ThreadStartArg* startArg = (wasmWin32ThreadStartArg*)calloc(1, sizeof(wasmWin32ThreadStartArg));
+    if (!startArg) {
+        return false;
+    }
+
+    startArg->startFunc = startFunc;
+    startArg->startFuncArg = startFuncArg;
+
+    *thread = CreateThread(NULL, 0, wasmWin32ThreadStart, startArg, 0, NULL);
+    return thread != NULL;
+}
+
+#endif
+
 typedef struct wasmMemory {
     U8* data;
-    U32 pages, maxPages;
     U32 size;
+    U32 pages;
+    U32 maxPages;
+    bool shared;
+    void* futex;
+    void (*futexFree)(void* futex);
+#ifdef WASM_MUTEX_TYPE
+    WASM_MUTEX_TYPE mutex;
+#endif
 } wasmMemory;
 
 #define WASM_PAGE_SIZE 65536
 
 static
 W2C2_INLINE
-void
+wasmMemory*
 wasmMemoryAllocate(
-    wasmMemory* memory,
-    U32 initialPages,
-    U32 maxPages
+    const U32 initialPages,
+    const U32 maxPages,
+    const bool shared
 ) {
-    U32 size = initialPages * WASM_PAGE_SIZE;
+    const U32 size = (shared ? maxPages : initialPages) * WASM_PAGE_SIZE;
+    wasmMemory* memory = (wasmMemory*)calloc(1, sizeof(wasmMemory));
+    if (!memory) {
+        abort();
+    }
     memory->data = (U8*)calloc(size, 1);
     memory->size = size;
     memory->pages = initialPages;
     memory->maxPages = maxPages;
+    memory->shared = shared;
+    memory->futex = NULL;
+    memory->futexFree = NULL;
+    if (shared) {
+#ifdef WASM_MUTEX_TYPE
+        if (!WASM_MUTEX_INIT(&memory->mutex)) {
+            abort();
+        }
+#else
+        abort();
+#endif
+    }
+    return memory;
 }
+
+#ifdef WASM_MUTEX_TYPE
+#define WASM_MEMORY_ALLOCATE_SHARED(initialPages, maxPages) \
+    wasmMemoryAllocate(initialPages, maxPages, true)
+#else
+#define WASM_MEMORY_ALLOCATE_SHARED(initialPages, maxPages) \
+    (_Pragma ("GCC error \"Shared memory not supported. Please define a threads implementation to use (WASM_THREADS_*)\"") NULL)
+#endif
 
 static
 W2C2_INLINE
@@ -534,14 +716,22 @@ void
 wasmMemoryFree(
     wasmMemory* memory
 ) {
-    if (memory->data == NULL) {
-        return;
-    }
-
     free(memory->data);
 
     memory->size = 0;
     memory->pages = 0;
+
+#ifdef WASM_MUTEX_TYPE
+    if (memory->shared) {
+        WASM_MUTEX_FREE(&memory->mutex);
+    }
+#endif
+
+    if (memory->futexFree) {
+        memory->futexFree(memory->futex);
+    }
+    memory->futex = NULL;
+    memory->futexFree = NULL;
 }
 
 static
@@ -549,10 +739,12 @@ W2C2_INLINE
 U32
 wasmMemoryGrow(
     wasmMemory* memory,
-    U32 delta
+    const U32 delta
 ) {
-    U32 oldPages = memory->pages;
-    U32 newPages = memory->pages + delta;
+    bool doRealloc = true;
+
+    const U32 oldPages = memory->pages;
+    const U32 newPages = memory->pages + delta;
 
     if (newPages == 0) {
         return 0;
@@ -562,24 +754,39 @@ wasmMemoryGrow(
         return (U32) -1;
     }
 
+    if (memory->shared) {
+        doRealloc = false;
+#ifdef WASM_MUTEX_TYPE
+        WASM_MUTEX_LOCK(&memory->mutex);
+#else
+        abort();
+#endif
+    }
+
     {
-        U32 oldSize = oldPages * WASM_PAGE_SIZE;
-        U32 newSize = newPages * WASM_PAGE_SIZE;
-        U32 deltaSize = delta * WASM_PAGE_SIZE;
-        U8* newData = (U8*)realloc((void*)memory->data, newSize);
-        if (newData == NULL) {
-            return (U32) -1;
+        const U32 newSize = newPages * WASM_PAGE_SIZE;
+        if (doRealloc) {
+            const U32 oldSize = oldPages * WASM_PAGE_SIZE;
+            const U32 deltaSize = delta * WASM_PAGE_SIZE;
+            U8* newData = (U8*)realloc(memory->data, newSize);
+            if (newData == NULL) {
+                return (U32) -1;
+            }
+
+            memset(newData + oldSize, 0, deltaSize);
+            memory->data = newData;
         }
 
-#if WASM_ENDIAN == WASM_LITTLE_ENDIAN
-        memset(newData + oldSize, 0, deltaSize);
-#elif WASM_ENDIAN == WASM_BIG_ENDIAN
-        memmove(newData + newSize - oldSize, newData, oldSize);
-        memset(newData, 0, deltaSize);
-#endif
         memory->pages = newPages;
         memory->size = newSize;
-        memory->data = newData;
+    }
+
+    if (memory->shared) {
+#ifdef WASM_MUTEX_TYPE
+        WASM_MUTEX_UNLOCK(&memory->mutex);
+#else
+        abort();
+#endif
     }
 
     return oldPages;
@@ -589,140 +796,265 @@ static
 W2C2_INLINE
 void
 wasmMemoryCopy(
-    wasmMemory* destinationMemory,
-    wasmMemory* sourceMemory,
-    U32 destinationAddress,
-    U32 sourceAddress,
-    U32 count
+    const wasmMemory* destinationMemory,
+    const wasmMemory* sourceMemory,
+    const U32 destinationAddress,
+    const U32 sourceAddress,
+    const U32 count
 ) {
-#if WASM_ENDIAN == WASM_LITTLE_ENDIAN
     memmove(
         destinationMemory->data + destinationAddress,
         sourceMemory->data + sourceAddress,
         count
     );
-#elif WASM_ENDIAN == WASM_BIG_ENDIAN
-    memmove(
-        destinationMemory->data + destinationMemory->size - destinationAddress - count,
-        sourceMemory->data + sourceMemory->size - sourceAddress - count,
-        count
-    );
-#endif
-    }
+}
 
 static
 W2C2_INLINE
 void
 wasmMemoryFill(
-    wasmMemory* memory,
-    U32 destinationAddress,
-    U32 value,
-    U32 count
+    const wasmMemory* memory,
+    const U32 destinationAddress,
+    const U32 value,
+    const U32 count
 ) {
-#if WASM_ENDIAN == WASM_LITTLE_ENDIAN
     memset(
         memory->data + destinationAddress,
         (int) value,
         (size_t) count
     );
-#elif WASM_ENDIAN == WASM_BIG_ENDIAN
-    memset(
-        memory->data + memory->size - destinationAddress - count,
-        (int) value,
-        (size_t) count
-    );
-#endif
+}
+
+static
+W2C2_INLINE
+void
+load_data(
+    void *dest,
+    const void *src,
+    const size_t n
+) {
+    memcpy(dest, src, n);
 }
 
 #if WASM_ENDIAN == WASM_BIG_ENDIAN
-static
-W2C2_INLINE
-void
-load_data(
-    void *dest,
-    const void *src,
-    size_t n
-) {
-    size_t i = 0;
-    U8* destChars = dest;
-    memcpy(dest, src, n);
-    for (; i < (n>>1); i++) {
-        U8 cursor = destChars[i];
-        destChars[i] = destChars[n - i - 1];
-        destChars[n - i - 1] = cursor;
-    }
-}
 
-#define LOAD_DATA(m, o, i, s) \
-    load_data(&((m).data[(m).size - (o) - (s)]), i, s)
+#define readSwapU8(base, offset) (*(U8*)((base) + (offset)))
+#define writeSwapU8(base, offset, value) (*(U8*)((base) + (offset)) = (value))
 
-#define DEFINE_LOAD(name, t1, t2, t3)                                            \
-    static W2C2_INLINE t3 name(wasmMemory* mem, U64 addr) {                      \
-        t1 result;                                                               \
-        memcpy(&result, &mem->data[mem->size - addr - sizeof(t1)], sizeof(t1));  \
-        return (t3)(t2)result;                                                   \
-    }
+#if defined(__APPLE__)
 
-#define DEFINE_STORE(name, t1, t2)                                                \
-    static W2C2_INLINE void name(wasmMemory* mem, U64 addr, t2 value) {           \
-        t1 wrapped = (t1)value;                                                   \
-        memcpy(&mem->data[mem->size - addr - sizeof(t1)], &wrapped, sizeof(t1));  \
-    }
+#include <libkern/OSByteOrder.h>
+#define readSwapU16(base, offset) OSReadSwapInt16(base, offset)
+#define readSwapU32(base, offset) OSReadSwapInt32(base, offset)
+#define readSwapU64(base, offset) OSReadSwapInt64(base, offset)
 
-#elif WASM_ENDIAN == WASM_LITTLE_ENDIAN
+#define writeSwapU16(base, offset, value) OSWriteSwapInt16(base, offset, value)
+#define writeSwapU32(base, offset, value) OSWriteSwapInt32(base, offset, value)
+#define writeSwapU64(base, offset, value) OSWriteSwapInt64(base, offset, value)
 
-static
-W2C2_INLINE
-void
-load_data(
-    void *dest,
-    const void *src,
-    size_t n
-) {
-    memcpy(dest, src, n);
-}
+#else
+
+#define readSwapU16(base, offset) swapU16(*(U16*)((base) + (offset)))
+#define readSwapU32(base, offset) swapU32(*(U32*)((base) + (offset)))
+#define readSwapU64(base, offset) swapU64(*(U64*)((base) + (offset)))
+
+#define writeSwapU16(base, offset, value) (*(U16*)((base) + (offset)) = swapU16(value))
+#define writeSwapU32(base, offset, value) (*(U32*)((base) + (offset)) = swapU32(value))
+#define writeSwapU64(base, offset, value) (*(U64*)((base) + (offset)) = swapU64(value))
+
+#endif
+
+#endif
+
+/* LOAD_DATA */
 
 #define LOAD_DATA(m, o, i, s) \
     load_data(&((m).data[o]), i, s)
 
-#define DEFINE_LOAD(name, t1, t2, t3)                        \
-    static W2C2_INLINE t3 name(wasmMemory* mem, U64 addr) {  \
-        t1 result;                                           \
-        memcpy(&result, &mem->data[addr], sizeof(t1));       \
-        return (t3)(t2)result;                               \
+/* DEFINE_LOAD */
+
+#define DEFINE_LOAD(name, t1, t2, t3)                       \
+    static W2C2_INLINE t3 name(wasmMemory* mem, U64 addr) { \
+        t1 result;                                          \
+        memcpy(&result, &mem->data[addr], sizeof(t1));      \
+        return (t3)(t2)result;                              \
     }
 
-#define DEFINE_STORE(name, t1, t2)                                       \
-    static W2C2_INLINE void name(wasmMemory* mem, U64 addr, t2 value) {  \
-        t1 wrapped = (t1)value;                                          \
-        memcpy(&mem->data[addr], &wrapped, sizeof(t1));                  \
+/* DEFINE_LOAD8 */
+
+#define DEFINE_LOAD8(name, t1, t2, t3) DEFINE_LOAD(name, t1, t2, t3)
+
+/* DEFINE_LOAD16 */
+
+#if WASM_ENDIAN == WASM_LITTLE_ENDIAN
+
+#define DEFINE_LOAD16(name, t1, t2, t3) DEFINE_LOAD(name, t1, t2, t3)
+
+#elif WASM_ENDIAN == WASM_BIG_ENDIAN
+
+#define DEFINE_LOAD16(name, t1, t2, t3)                     \
+    static W2C2_INLINE t3 name(wasmMemory* mem, U64 addr) { \
+        t1 result;                                          \
+        U16 v = readSwapU16(mem->data, addr);               \
+        memcpy(&result, &v, sizeof(U16));                   \
+        return (t3)(t2)result;                              \
     }
 
 #endif
 
-DEFINE_LOAD(i32_load, U32, U32, U32)
-DEFINE_LOAD(i64_load, U64, U64, U64)
-DEFINE_LOAD(f32_load, F32, F32, F32)
-DEFINE_LOAD(f64_load, F64, F64, F64)
-DEFINE_LOAD(i32_load8_s, I8, I32, U32)
-DEFINE_LOAD(i64_load8_s, I8, I64, U64)
-DEFINE_LOAD(i32_load8_u, U8, U32, U32)
-DEFINE_LOAD(i64_load8_u, U8, U64, U64)
-DEFINE_LOAD(i32_load16_s, I16, I32, U32)
-DEFINE_LOAD(i64_load16_s, I16, I64, U64)
-DEFINE_LOAD(i32_load16_u, U16, U32, U32)
-DEFINE_LOAD(i64_load16_u, U16, U64, U64)
-DEFINE_LOAD(i64_load32_s, I32, I64, U64)
-DEFINE_LOAD(i64_load32_u, U32, U64, U64)
-DEFINE_STORE(i32_store, U32, U32)
-DEFINE_STORE(i64_store, U64, U64)
-DEFINE_STORE(f32_store, F32, F32)
-DEFINE_STORE(f64_store, F64, F64)
-DEFINE_STORE(i32_store8, U8, U32)
-DEFINE_STORE(i32_store16, U16, U32)
-DEFINE_STORE(i64_store8, U8, U64)
-DEFINE_STORE(i64_store16, U16, U64)
-DEFINE_STORE(i64_store32, U32, U64)
+/* DEFINE_LOAD32 */
+
+#if WASM_ENDIAN == WASM_LITTLE_ENDIAN
+
+#define DEFINE_LOAD32(name, t1, t2, t3) DEFINE_LOAD(name, t1, t2, t3)
+
+#elif WASM_ENDIAN == WASM_BIG_ENDIAN
+
+#define DEFINE_LOAD32(name, t1, t2, t3)                     \
+    static W2C2_INLINE t3 name(wasmMemory* mem, U64 addr) { \
+        t1 result;                                          \
+        U32 v = readSwapU32(mem->data, addr);               \
+        memcpy(&result, &v, sizeof(U32));                   \
+        return (t3)(t2)result;                              \
+    }
+
+#endif
+
+/* DEFINE_LOAD64 */
+
+#if WASM_ENDIAN == WASM_LITTLE_ENDIAN
+
+#define DEFINE_LOAD64(name, t1, t2, t3) DEFINE_LOAD(name, t1, t2, t3)
+
+#elif WASM_ENDIAN == WASM_BIG_ENDIAN
+
+#define DEFINE_LOAD64(name, t1, t2, t3)                     \
+    static W2C2_INLINE t3 name(wasmMemory* mem, U64 addr) { \
+        t1 result;                                          \
+        U64 v = readSwapU64(mem->data, addr);               \
+        memcpy(&result, &v, sizeof(U64));                   \
+        return (t3)(t2)result;                              \
+    }
+
+#endif
+
+/* DEFINE_STORE */
+
+#define DEFINE_STORE(name, t1, t2)                                      \
+    static W2C2_INLINE void name(wasmMemory* mem, U64 addr, t2 value) { \
+        t1 wrapped = (t1)value;                                         \
+        memcpy(&mem->data[addr], &wrapped, sizeof(t1));                 \
+    }
+
+/* DEFINE_STORE8 */
+
+#define DEFINE_STORE8(name, t1, t2) DEFINE_STORE(name, t1, t2)
+
+/* DEFINE_STORE16 */
+
+#if WASM_ENDIAN == WASM_LITTLE_ENDIAN
+
+#define DEFINE_STORE16(name, t1, t2) DEFINE_STORE(name, t1, t2)
+
+#elif WASM_ENDIAN == WASM_BIG_ENDIAN
+
+#define DEFINE_STORE16(name, t1, t2)                                    \
+    static W2C2_INLINE void name(wasmMemory* mem, U64 addr, t2 value) { \
+        t1 wrapped = (t1)value;                                         \
+        U16 v;                                                          \
+        memcpy(&v, &wrapped, sizeof(U16));                              \
+        writeSwapU16(mem->data, addr, v);                               \
+    }
+
+#endif
+
+/* DEFINE_STORE32 */
+
+#if WASM_ENDIAN == WASM_LITTLE_ENDIAN
+
+#define DEFINE_STORE32(name, t1, t2) DEFINE_STORE(name, t1, t2)
+
+#elif WASM_ENDIAN == WASM_BIG_ENDIAN
+
+#define DEFINE_STORE32(name, t1, t2)                                    \
+    static W2C2_INLINE void name(wasmMemory* mem, U64 addr, t2 value) { \
+        t1 wrapped = (t1)value;                                         \
+        U32 v;                                                          \
+        memcpy(&v, &wrapped, sizeof(U32));                              \
+        writeSwapU32(mem->data, addr, v);                               \
+    }
+
+#endif
+
+/* DEFINE_STORE64 */
+
+#if WASM_ENDIAN == WASM_LITTLE_ENDIAN
+
+#define DEFINE_STORE64(name, t1, t2) DEFINE_STORE(name, t1, t2)
+
+#elif WASM_ENDIAN == WASM_BIG_ENDIAN
+
+#define DEFINE_STORE64(name, t1, t2)                                    \
+    static W2C2_INLINE void name(wasmMemory* mem, U64 addr, t2 value) { \
+        t1 wrapped = (t1)value;                                         \
+        U64 v;                                                          \
+        memcpy(&v, &wrapped, sizeof(U64));                              \
+        writeSwapU64(mem->data, addr, v);                               \
+    }
+
+#endif
+
+DEFINE_LOAD32(i32_load, U32, U32, U32)
+DEFINE_LOAD64(i64_load, U64, U64, U64)
+DEFINE_LOAD32(f32_load, F32, F32, F32)
+DEFINE_LOAD64(f64_load, F64, F64, F64)
+DEFINE_LOAD8(i32_load8_s, I8, I32, U32)
+DEFINE_LOAD8(i64_load8_s, I8, I64, U64)
+DEFINE_LOAD8(i32_load8_u, U8, U32, U32)
+DEFINE_LOAD8(i64_load8_u, U8, U64, U64)
+DEFINE_LOAD16(i32_load16_s, I16, I32, U32)
+DEFINE_LOAD16(i64_load16_s, I16, I64, U64)
+DEFINE_LOAD16(i32_load16_u, U16, U32, U32)
+DEFINE_LOAD16(i64_load16_u, U16, U64, U64)
+DEFINE_LOAD32(i64_load32_s, I32, I64, U64)
+DEFINE_LOAD32(i64_load32_u, U32, U64, U64)
+DEFINE_STORE32(i32_store, U32, U32)
+DEFINE_STORE64(i64_store, U64, U64)
+DEFINE_STORE32(f32_store, F32, F32)
+DEFINE_STORE64(f64_store, F64, F64)
+DEFINE_STORE8(i32_store8, U8, U32)
+DEFINE_STORE16(i32_store16, U16, U32)
+DEFINE_STORE8(i64_store8, U8, U64)
+DEFINE_STORE16(i64_store16, U16, U64)
+DEFINE_STORE32(i64_store32, U32, U64)
+
+#if WASM_ENDIAN == WASM_LITTLE_ENDIAN
+
+#define DEFINE_SWAP(size, suffix, type) \
+    static W2C2_INLINE void swap_ ## suffix(type* v) { (void)v; }
+
+#elif WASM_ENDIAN == WASM_BIG_ENDIAN
+
+#define DEFINE_SWAP(size, suffix, type)                \
+    static W2C2_INLINE void swap_ ## suffix(type* v) { \
+        U ## size tmp;                                 \
+        memcpy(&tmp, v, size / 8);                     \
+        tmp = swapU ## size(tmp);                      \
+        memcpy(v, &tmp, size / 8);                     \
+    }
+
+#endif
+
+DEFINE_SWAP(16, s, short)
+DEFINE_SWAP(16, S, unsigned short)
+DEFINE_SWAP(32, i, int)
+DEFINE_SWAP(32, I, unsigned int)
+DEFINE_SWAP(32, l, long)
+DEFINE_SWAP(32, L, unsigned long)
+DEFINE_SWAP(64, q, long long)
+DEFINE_SWAP(64, Q, unsigned long long)
+DEFINE_SWAP(32, f, float)
+DEFINE_SWAP(64, d, double)
 
 typedef void (*wasmFunc)(void);
 
@@ -736,8 +1068,8 @@ W2C2_INLINE
 void
 wasmTableAllocate(
     wasmTable* table,
-    U32 size,
-    U32 maxSize
+    const U32 size,
+    const U32 maxSize
 ) {
     table->size = size;
     table->maxSize = maxSize;
@@ -760,5 +1092,373 @@ wasmTableFree(
 }
 
 #define TF(table, index, t) ((t)((table).data[index]))
+
+typedef struct wasmFuncExport {
+    wasmFunc func;
+    char* name;
+} wasmFuncExport;
+
+typedef struct wasmModuleInstance {
+    wasmFuncExport* funcExports;
+    void* (*resolveImports)(const char* module, const char* name);
+    struct wasmModuleInstance* (*newChild)(struct wasmModuleInstance* self);
+} wasmModuleInstance;
+
+
+#ifdef _MSC_VER
+#define WASM_ATOMICS_MSVC
+#elif defined(__GNUC__) && (defined(__clang__) || GCC_VERSION >= 40700)
+#define WASM_ATOMICS_GCC
+#endif
+
+#ifdef WASM_ATOMICS_MSVC
+
+#include <intrin.h>
+
+#define atomic_load_U8(a) _InterlockedOr8(a, 0)
+#define atomic_load_U16(a) _InterlockedOr16(a, 0)
+#define atomic_load_U32(a) _InterlockedOr(a, 0)
+#define atomic_load_U64(a) _InterlockedOr64(a, 0)
+
+#define atomic_store_U8(a, v) _InterlockedExchange8(a, v)
+#define atomic_store_U16(a, v) _InterlockedExchange16(a, v)
+#define atomic_store_U32(a, v) _InterlockedExchange(a, v)
+#define atomic_store_U64(a, v) _InterlockedExchange64(a, v)
+
+#define atomic_fence() _ReadWriteBarrier()
+
+#elif defined(WASM_ATOMICS_GCC)
+
+/* Use gcc/clang/icc intrinsics */
+#define atomic_load_U8(a) __atomic_load_n((U8*)(a), __ATOMIC_SEQ_CST)
+#define atomic_load_U16(a) __atomic_load_n((U16*)(a), __ATOMIC_SEQ_CST)
+#define atomic_load_U32(a) __atomic_load_n((U32*)(a), __ATOMIC_SEQ_CST)
+#define atomic_load_U64(a) __atomic_load_n((U64*)(a), __ATOMIC_SEQ_CST)
+
+#define atomic_store_U8(a, v) __atomic_store_n((U8*)(a), v, __ATOMIC_SEQ_CST)
+#define atomic_store_U16(a, v) __atomic_store_n((U16*)(a), v, __ATOMIC_SEQ_CST)
+#define atomic_store_U32(a, v) __atomic_store_n((U32*)(a), v, __ATOMIC_SEQ_CST)
+#define atomic_store_U64(a, v) __atomic_store_n((U64*)(a), v, __ATOMIC_SEQ_CST)
+
+#define atomic_fence() __atomic_thread_fence(__ATOMIC_SEQ_CST)
+
+#endif
+
+#ifdef WASM_ATOMICS_MSVC
+
+#include <intrin.h>
+
+#define atomic_add_U8(a, v) _InterlockedExchangeAdd8(a, v)
+#define atomic_add_U16(a, v) _InterlockedExchangeAdd16(a, v)
+#define atomic_add_U32(a, v) _InterlockedExchangeAdd(a, v)
+#define atomic_add_U64(a, v) _InterlockedExchangeAdd64(a, v)
+
+#define atomic_sub_U8(a, v) _InterlockedExchangeAdd8(a, -(v))
+#define atomic_sub_U16(a, v) _InterlockedExchangeAdd16(a, -(v))
+#define atomic_sub_U32(a, v) _InterlockedExchangeAdd(a, -(v))
+#define atomic_sub_U64(a, v) _InterlockedExchangeAdd64(a, -(v))
+
+#define atomic_and_U8(a, v) _InterlockedAnd8(a, v)
+#define atomic_and_U16(a, v) _InterlockedAnd16(a, v)
+#define atomic_and_U32(a, v) _InterlockedAnd(a, v)
+#define atomic_and_U64(a, v) _InterlockedAnd64(a, v)
+
+#define atomic_or_U8(a, v) _InterlockedOr8(a, v)
+#define atomic_or_U16(a, v) _InterlockedOr16(a, v)
+#define atomic_or_U32(a, v) _InterlockedOr(a, v)
+#define atomic_or_U64(a, v) _InterlockedOr64(a, v)
+
+#define atomic_xor_U8(a, v) _InterlockedXor8(a, v)
+#define atomic_xor_U16(a, v) _InterlockedXor16(a, v)
+#define atomic_xor_U32(a, v) _InterlockedXor(a, v)
+#define atomic_xor_U64(a, v) _InterlockedXor64(a, v)
+
+#define atomic_exchange_U8(a, v) _InterlockedExchange8(a, v)
+#define atomic_exchange_U16(a, v) _InterlockedExchange16(a, v)
+#define atomic_exchange_U32(a, v) _InterlockedExchange(a, v)
+#define atomic_exchange_U64(a, v) _InterlockedExchange64(a, v)
+
+#define atomic_compare_exchange_U8(a, expected_ptr, desired) \
+    _InterlockedCompareExchange8(a, desired, *(expected_ptr))
+#define atomic_compare_exchange_U16(a, expected_ptr, desired) \
+    _InterlockedCompareExchange16(a, desired, *(expected_ptr))
+#define atomic_compare_exchange_U32(a, expected_ptr, desired) \
+    _InterlockedCompareExchange(a, desired, *(expected_ptr))
+#define atomic_compare_exchange_U64(a, expected_ptr, desired) \
+    _InterlockedCompareExchange64(a, desired, *(expected_ptr))
+
+#elif defined(WASM_ATOMICS_GCC)
+
+/* Use gcc/clang/icc intrinsics */
+
+#define atomic_add_U8(a, v) __atomic_fetch_add((U8*)(a), v, __ATOMIC_SEQ_CST)
+#define atomic_add_U16(a, v) __atomic_fetch_add((U16*)(a), v, __ATOMIC_SEQ_CST)
+#define atomic_add_U32(a, v) __atomic_fetch_add((U32*)(a), v, __ATOMIC_SEQ_CST)
+#define atomic_add_U64(a, v) __atomic_fetch_add((U64*)(a), v, __ATOMIC_SEQ_CST)
+
+#define atomic_sub_U8(a, v) __atomic_fetch_sub((U8*)(a), v, __ATOMIC_SEQ_CST)
+#define atomic_sub_U16(a, v) __atomic_fetch_sub((U16*)(a), v, __ATOMIC_SEQ_CST)
+#define atomic_sub_U32(a, v) __atomic_fetch_sub((U32*)(a), v, __ATOMIC_SEQ_CST)
+#define atomic_sub_U64(a, v) __atomic_fetch_sub((U64*)(a), v, __ATOMIC_SEQ_CST)
+
+#define atomic_and_U8(a, v) __atomic_fetch_and((U8*)(a), v, __ATOMIC_SEQ_CST)
+#define atomic_and_U16(a, v) __atomic_fetch_and((U16*)(a), v, __ATOMIC_SEQ_CST)
+#define atomic_and_U32(a, v) __atomic_fetch_and((U32*)(a), v, __ATOMIC_SEQ_CST)
+#define atomic_and_U64(a, v) __atomic_fetch_and((U64*)(a), v, __ATOMIC_SEQ_CST)
+
+#define atomic_or_U8(a, v) __atomic_fetch_or((U8*)(a), v, __ATOMIC_SEQ_CST)
+#define atomic_or_U16(a, v) __atomic_fetch_or((U16*)(a), v, __ATOMIC_SEQ_CST)
+#define atomic_or_U32(a, v) __atomic_fetch_or((U32*)(a), v, __ATOMIC_SEQ_CST)
+#define atomic_or_U64(a, v) __atomic_fetch_or((U64*)(a), v, __ATOMIC_SEQ_CST)
+
+#define atomic_xor_U8(a, v) __atomic_fetch_xor((U8*)(a), v, __ATOMIC_SEQ_CST)
+#define atomic_xor_U16(a, v) __atomic_fetch_xor((U16*)(a), v, __ATOMIC_SEQ_CST)
+#define atomic_xor_U32(a, v) __atomic_fetch_xor((U32*)(a), v, __ATOMIC_SEQ_CST)
+#define atomic_xor_U64(a, v) __atomic_fetch_xor((U64*)(a), v, __ATOMIC_SEQ_CST)
+
+#define atomic_exchange_U8(a, v) __atomic_exchange_n((U8*)(a), v, __ATOMIC_SEQ_CST)
+#define atomic_exchange_U16(a, v) __atomic_exchange_n((U16*)(a), v, __ATOMIC_SEQ_CST)
+#define atomic_exchange_U32(a, v) __atomic_exchange_n((U32*)(a), v, __ATOMIC_SEQ_CST)
+#define atomic_exchange_U64(a, v) __atomic_exchange_n((U64*)(a), v, __ATOMIC_SEQ_CST)
+
+#define __atomic_compare_exchange_helper(a, expected_ptr, desired)        \
+  (__atomic_compare_exchange_n(a, expected_ptr, desired, 0 /* is_weak */, \
+                               __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST),       \
+   *(expected_ptr))
+
+#define atomic_compare_exchange_U8(a, expected_ptr, desired) \
+    __atomic_compare_exchange_helper((U8*)(a), expected_ptr, desired)
+#define atomic_compare_exchange_U16(a, expected_ptr, desired) \
+    __atomic_compare_exchange_helper((U16*)(a), expected_ptr, desired)
+#define atomic_compare_exchange_U32(a, expected_ptr, desired) \
+    __atomic_compare_exchange_helper((U32*)(a), expected_ptr, desired)
+#define atomic_compare_exchange_U64(a, expected_ptr, desired) \
+    __atomic_compare_exchange_helper((U64*)(a), expected_ptr, desired)
+
+#endif
+
+#if defined(WASM_ATOMICS_MSVC) || defined(WASM_ATOMICS_GCC)
+
+#if WASM_ENDIAN == WASM_LITTLE_ENDIAN
+
+#define DEFINE_ATOMIC_LOAD(name, t1, t2)                    \
+    static W2C2_INLINE t2 name(wasmMemory* mem, U64 addr) { \
+        t1 result;                                          \
+        result = atomic_load_##t1(&mem->data[addr]);        \
+        return (t2)result;                                  \
+    }
+
+#elif WASM_ENDIAN == WASM_BIG_ENDIAN
+
+#define DEFINE_ATOMIC_LOAD(name, t1, t2)                    \
+    static W2C2_INLINE t2 name(wasmMemory* mem, U64 addr) { \
+        t1 result;                                          \
+        result = atomic_load_##t1(&mem->data[addr]);        \
+        result = swap##t1(result);                          \
+        return (t2)result;                                  \
+    }
+
+#endif
+
+DEFINE_ATOMIC_LOAD(i32_atomic_load8_u, U8, U32)
+DEFINE_ATOMIC_LOAD(i64_atomic_load8_u, U8, U64)
+DEFINE_ATOMIC_LOAD(i32_atomic_load16_u, U16, U32)
+DEFINE_ATOMIC_LOAD(i64_atomic_load16_u, U16, U64)
+DEFINE_ATOMIC_LOAD(i64_atomic_load32_u, U32, U64)
+DEFINE_ATOMIC_LOAD(i32_atomic_load, U32, U32)
+DEFINE_ATOMIC_LOAD(i64_atomic_load, U64, U64)
+
+#if WASM_ENDIAN == WASM_LITTLE_ENDIAN
+
+#define DEFINE_ATOMIC_STORE(name, t1, t2)                               \
+    static W2C2_INLINE void name(wasmMemory* mem, U64 addr, t2 value) { \
+        t1 wrapped = (t1)value;                                         \
+        atomic_store_##t1(&mem->data[addr], wrapped);                   \
+    }
+
+#elif WASM_ENDIAN == WASM_BIG_ENDIAN
+
+#define DEFINE_ATOMIC_STORE(name, t1, t2)                               \
+    static W2C2_INLINE void name(wasmMemory* mem, U64 addr, t2 value) { \
+        t1 wrapped = (t1)value;                                         \
+        wrapped = swap##t1(wrapped);                                    \
+        atomic_store_##t1(&mem->data[addr], wrapped);                   \
+    }
+
+#endif
+
+DEFINE_ATOMIC_STORE(i32_atomic_store, U32, U32)
+DEFINE_ATOMIC_STORE(i64_atomic_store, U64, U64)
+DEFINE_ATOMIC_STORE(i32_atomic_store8, U8, U32)
+DEFINE_ATOMIC_STORE(i32_atomic_store16, U16, U32)
+DEFINE_ATOMIC_STORE(i64_atomic_store8, U8, U64)
+DEFINE_ATOMIC_STORE(i64_atomic_store16, U16, U64)
+DEFINE_ATOMIC_STORE(i64_atomic_store32, U32, U64)
+
+#if WASM_ENDIAN == WASM_LITTLE_ENDIAN
+
+#define DEFINE_ATOMIC_RMW(name, op, op2, size, t)                           \
+    static W2C2_INLINE t name(wasmMemory* mem, U64 addr, t value) {         \
+        U ## size wrapped = (U ## size)value;                               \
+        U ## size ret = atomic_##op##_##U##size(&mem->data[addr], wrapped); \
+        return (t)ret;                                                      \
+    }
+
+#elif WASM_ENDIAN == WASM_BIG_ENDIAN && defined(WASM_MUTEX_TYPE)
+
+#define DEFINE_ATOMIC_RMW(name, op, op2, size, t)                   \
+    static W2C2_INLINE t name(wasmMemory* mem, U64 addr, t value) { \
+        U ## size old = 0;                                          \
+        U ## size wrapped = 0;                                      \
+        U ## size new = 0;                                          \
+        WASM_MUTEX_LOCK(&mem->mutex);                               \
+        old = readSwapU ## size(mem->data, addr);                   \
+        wrapped = (U ## size)value;                                 \
+        new = old op2 wrapped;                                      \
+        writeSwapU ## size(mem->data, addr, new);                   \
+        WASM_MUTEX_UNLOCK(&mem->mutex);                             \
+        return (t)old;                                              \
+    }
+
+#endif
+
+#if (WASM_ENDIAN == WASM_LITTLE_ENDIAN) || (WASM_ENDIAN == WASM_BIG_ENDIAN && defined(WASM_MUTEX_TYPE))
+DEFINE_ATOMIC_RMW(i32_atomic_rmw8_add_u, add, +, 8, U32)
+DEFINE_ATOMIC_RMW(i32_atomic_rmw16_add_u, add, +, 16, U32)
+DEFINE_ATOMIC_RMW(i32_atomic_rmw_add, add, +, 32, U32)
+DEFINE_ATOMIC_RMW(i64_atomic_rmw8_add_u, add, +, 8, U64)
+DEFINE_ATOMIC_RMW(i64_atomic_rmw16_add_u, add, +, 16, U64)
+DEFINE_ATOMIC_RMW(i64_atomic_rmw32_add_u, add, +, 32, U64)
+DEFINE_ATOMIC_RMW(i64_atomic_rmw_add, add, +, 64, U64)
+
+DEFINE_ATOMIC_RMW(i32_atomic_rmw8_sub_u, sub, -, 8, U32)
+DEFINE_ATOMIC_RMW(i32_atomic_rmw16_sub_u, sub, -, 16, U32)
+DEFINE_ATOMIC_RMW(i32_atomic_rmw_sub, sub, -, 32, U32)
+DEFINE_ATOMIC_RMW(i64_atomic_rmw8_sub_u, sub, -, 8, U64)
+DEFINE_ATOMIC_RMW(i64_atomic_rmw16_sub_u, sub, -, 16, U64)
+DEFINE_ATOMIC_RMW(i64_atomic_rmw32_sub_u, sub, -, 32, U64)
+DEFINE_ATOMIC_RMW(i64_atomic_rmw_sub, sub, -, 64, U64)
+
+DEFINE_ATOMIC_RMW(i32_atomic_rmw8_and_u, and, &, 8, U32)
+DEFINE_ATOMIC_RMW(i32_atomic_rmw16_and_u, and, &, 16, U32)
+DEFINE_ATOMIC_RMW(i32_atomic_rmw_and, and, &, 32, U32)
+DEFINE_ATOMIC_RMW(i64_atomic_rmw8_and_u, and, &, 8, U64)
+DEFINE_ATOMIC_RMW(i64_atomic_rmw16_and_u, and, &, 16, U64)
+DEFINE_ATOMIC_RMW(i64_atomic_rmw32_and_u, and, &, 32, U64)
+DEFINE_ATOMIC_RMW(i64_atomic_rmw_and, and, &, 64, U64)
+
+DEFINE_ATOMIC_RMW(i32_atomic_rmw8_or_u, or, |, 8, U32)
+DEFINE_ATOMIC_RMW(i32_atomic_rmw16_or_u, or, |, 16, U32)
+DEFINE_ATOMIC_RMW(i32_atomic_rmw_or, or, |, 32, U32)
+DEFINE_ATOMIC_RMW(i64_atomic_rmw8_or_u, or, |, 8, U64)
+DEFINE_ATOMIC_RMW(i64_atomic_rmw16_or_u, or, |, 16, U64)
+DEFINE_ATOMIC_RMW(i64_atomic_rmw32_or_u, or, |, 32, U64)
+DEFINE_ATOMIC_RMW(i64_atomic_rmw_or, or, |, 64, U64)
+
+DEFINE_ATOMIC_RMW(i32_atomic_rmw8_xor_u, xor, ^, 8, U32)
+DEFINE_ATOMIC_RMW(i32_atomic_rmw16_xor_u, xor, ^, 16, U32)
+DEFINE_ATOMIC_RMW(i32_atomic_rmw_xor, xor, ^, 32, U32)
+DEFINE_ATOMIC_RMW(i64_atomic_rmw8_xor_u, xor, ^, 8, U64)
+DEFINE_ATOMIC_RMW(i64_atomic_rmw16_xor_u, xor, ^, 16, U64)
+DEFINE_ATOMIC_RMW(i64_atomic_rmw32_xor_u, xor, ^, 32, U64)
+DEFINE_ATOMIC_RMW(i64_atomic_rmw_xor, xor, ^, 64, U64)
+#endif
+
+#if WASM_ENDIAN == WASM_LITTLE_ENDIAN
+
+#define DEFINE_ATOMIC_RMW_XCHG(name, size, t) \
+    DEFINE_ATOMIC_RMW(name, exchange, +0*, size, t)
+
+#elif WASM_ENDIAN == WASM_BIG_ENDIAN && defined(WASM_MUTEX_TYPE)
+
+#define DEFINE_ATOMIC_RMW_XCHG(name, size, t)                       \
+    static W2C2_INLINE t name(wasmMemory* mem, U64 addr, t value) { \
+        U ## size old = 0;                                          \
+        U ## size wrapped = 0;                                      \
+        WASM_MUTEX_LOCK(&mem->mutex);                               \
+        old = readSwapU ## size(mem->data, addr);                   \
+        wrapped = (U ## size)value;                                 \
+        writeSwapU ## size(mem->data, addr, wrapped);               \
+        WASM_MUTEX_UNLOCK(&mem->mutex);                             \
+        return (t)old;                                              \
+    }
+
+#endif
+
+#if (WASM_ENDIAN == WASM_LITTLE_ENDIAN) || (WASM_ENDIAN == WASM_BIG_ENDIAN && defined(WASM_MUTEX_TYPE))
+DEFINE_ATOMIC_RMW_XCHG(i32_atomic_rmw8_xchg_u, 8, U32)
+DEFINE_ATOMIC_RMW_XCHG(i32_atomic_rmw16_xchg_u, 16, U32)
+DEFINE_ATOMIC_RMW_XCHG(i32_atomic_rmw_xchg, 32, U32)
+DEFINE_ATOMIC_RMW_XCHG(i64_atomic_rmw8_xchg_u, 8, U64)
+DEFINE_ATOMIC_RMW_XCHG(i64_atomic_rmw16_xchg_u, 16, U64)
+DEFINE_ATOMIC_RMW_XCHG(i64_atomic_rmw32_xchg_u, 32, U64)
+DEFINE_ATOMIC_RMW_XCHG(i64_atomic_rmw_xchg, 64, U64)
+#endif
+
+#if WASM_ENDIAN == WASM_LITTLE_ENDIAN
+
+#define DEFINE_ATOMIC_RMW_CMPXCHG(name, size, t)                                      \
+    static W2C2_INLINE t name(wasmMemory* mem, U64 addr, t expected, t replacement) { \
+        U ## size expected_wrapped = (U ## size)expected;                             \
+        U ## size replacement_wrapped = (U ## size)replacement;                       \
+        U ## size old = atomic_compare_exchange_U##size(                              \
+            &mem->data[addr],                                                         \
+            &expected_wrapped,                                                        \
+            replacement_wrapped                                                       \
+        );                                                                            \
+        return (t)old;                                                                \
+    }
+
+#elif WASM_ENDIAN == WASM_BIG_ENDIAN && defined(WASM_MUTEX_TYPE)
+
+#define DEFINE_ATOMIC_RMW_CMPXCHG(name, size, t)                                      \
+    static W2C2_INLINE t name(wasmMemory* mem, U64 addr, t expected, t replacement) { \
+        U ## size old = 0;                                                            \
+        U ## size expected_wrapped = (U ## size)expected;                             \
+        U ## size replacement_wrapped = (U ## size)replacement;                       \
+        WASM_MUTEX_LOCK(&mem->mutex);                                                 \
+        expected_wrapped = (U ## size)expected;                                       \
+        replacement_wrapped = (U ## size)replacement;                                 \
+        old = readSwapU ## size(mem->data, addr);                                     \
+        if (old == expected_wrapped) {                                                \
+            writeSwapU ## size(mem->data, addr, replacement_wrapped);                 \
+        }                                                                             \
+        WASM_MUTEX_UNLOCK(&mem->mutex);                                               \
+        return (t)old;                                                                \
+    }
+
+#endif
+
+#if (WASM_ENDIAN == WASM_LITTLE_ENDIAN) || (WASM_ENDIAN == WASM_BIG_ENDIAN && defined(WASM_MUTEX_TYPE))
+DEFINE_ATOMIC_RMW_CMPXCHG(i32_atomic_rmw8_cmpxchg_u, 8, U32)
+DEFINE_ATOMIC_RMW_CMPXCHG(i32_atomic_rmw16_cmpxchg_u, 16, U32)
+DEFINE_ATOMIC_RMW_CMPXCHG(i32_atomic_rmw_cmpxchg, 32, U32)
+DEFINE_ATOMIC_RMW_CMPXCHG(i64_atomic_rmw8_cmpxchg_u, 8, U64)
+DEFINE_ATOMIC_RMW_CMPXCHG(i64_atomic_rmw16_cmpxchg_u, 16, U64)
+DEFINE_ATOMIC_RMW_CMPXCHG(i64_atomic_rmw32_cmpxchg_u, 32, U64)
+DEFINE_ATOMIC_RMW_CMPXCHG(i64_atomic_rmw_cmpxchg, 64, U64)
+#endif
+
+#endif /* WASM_ATOMICS_MSVC || WASM_ATOMICS_GCC */
+
+U32
+wasmMemoryAtomicWait(
+    wasmMemory* mem,
+    U32 address,
+    U64 expect,
+    I64 timeout,
+    bool wait64
+);
+
+U32
+wasmMemoryAtomicNotify(
+    wasmMemory *mem,
+    U32 address,
+    U32 count
+);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* W2C2_BASE_H */

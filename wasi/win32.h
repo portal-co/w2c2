@@ -4,6 +4,10 @@
 #include <windows.h>
 #include <errno.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 struct dirent {
     long d_ino;
     unsigned short d_reclen;
@@ -16,7 +20,7 @@ typedef struct DIR DIR;
 
 DIR* opendir(const char*);
 struct dirent* readdir(DIR*);
-int	closedir(DIR*);
+int closedir(DIR*);
 
 /* File types for 'd_type' */
 #define DT_UNKNOWN  0
@@ -34,5 +38,9 @@ struct DIR {
     struct dirent ret;
     HANDLE handle;
 };
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* W2C2_WASI_WIN32_H */
