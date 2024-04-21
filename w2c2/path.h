@@ -7,6 +7,7 @@
 #else
 #define PATH_SEPARATOR '/'
 #define PATH_SEPARATOR_STRING "/"
+#define HAS_GLOB 1
 #endif
 
 #endif /* W2C2_PATH_H */
