@@ -13,11 +13,17 @@ wasi_transition = transition(
 def _w2c2_apply_impl(ctx):
     cfile = ctx.actions.declare_file(ctx.attr.file_name + ".c")
     hfile = ctx.actions.declare_file(ctx.attr.file_name + ".h")
+    wasm_file = ctx.actions.declare_file(ctx.attr.module_name + ".wasm")
+    ctx.actions.symlink(
+        target_file = ctx.executable.wasm,
+        output = wasm_file,
+        is_executable = False
+    )
     ctx.actions.run(
         executable = ctx.executable._tool,
-        inputs = [ctx.executable.wasm],
+        inputs = [wasm_file],
         outputs = [cfile, hfile],
-        arguments = ["-m",ctx.executable.wasm.path,cfile.path]
+        arguments = ["-m",wasm_file.path,cfile.path]
     )
     return DefaultInfo(files = depset([cfile, hfile]))
 
@@ -36,6 +42,7 @@ w2c2_apply = rule(
             default = "//w2c2",
             cfg = "exec",
         ),
-        "file_name": attr.string()
+        "file_name": attr.string(),
+        "module_name": attr.string()
     },
 )

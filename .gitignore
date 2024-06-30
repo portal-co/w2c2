@@ -7,3 +7,5 @@ cmake-build-debug
 build
 w2c2/w2c2
 bazel-*
+/zig-*
+/.zig-cache
