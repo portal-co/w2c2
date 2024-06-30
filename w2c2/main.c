@@ -2,6 +2,8 @@
 #include <stdio.h>
 #include <ctype.h>
 #include <limits.h>
+#include <stdlib.h>
+#include <string.h>
 #if HAS_UNISTD
 #include <unistd.h>
 #endif
@@ -22,9 +24,9 @@
 #include "compat.h"
 
 #if HAS_PTHREAD
-static char* const optString = "t:f:d:r:pgmch";
+static char* const optString = "t:f:d:r:pgmchD";
 #else
-static char* const optString = "f:d:r:pgmch";
+static char* const optString = "f:d:r:pgmchD";
 #endif /* HAS_PTHREAD */
 
 #if HAS_GLOB
@@ -301,6 +303,7 @@ main(
     WasmDataSegmentMode dataSegmentMode = wasmDataSegmentModeArrays;
     char moduleName[PATH_MAX];
     bool clean = false;
+    bool dirMode = false;
 
     int index = 0;
     int c = -1;
@@ -317,6 +320,10 @@ main(
 #endif /* HAS_PTHREAD */
             case 'f': {
                 functionsPerFile = (U32) strtoul(optarg, NULL, 0);
+                break;
+            }
+            case 'D': {
+                dirMode = true;
                 break;
             }
             case 'p': {
@@ -451,6 +458,14 @@ main(
     outputPath = argv[index++];
 
     getPathModuleName(moduleName, modulePath);
+
+    if(dirMode){
+        const char *s = "/result.c";
+        char *outputPath2 = malloc(strlen(outputPath) + strlen(s));
+        strcpy(outputPath2, outputPath);
+        strcpy(outputPath2 + strlen(outputPath), s);
+        outputPath = outputPath2;
+    };
 
     {
         WasmModuleReader reader = emptyWasmModuleReader;

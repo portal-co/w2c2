@@ -21,3 +21,16 @@ pub fn build(b: *std.Build) void {
     wasi.addCSourceFiles(.{ .files = &.{"./wasi/wasi.c"}, .flags = &.{ "-DHAS_UNISTD", "-DHAS_TIMESPEC" } });
     b.installArtifact(wasi);
 }
+
+pub fn w2c2(b: *std.Build, src: std.Build.LazyPath, lib: std.Build.StaticLibraryOptions) *std.Build.Step.Compile {
+    const result = b.addStaticLibrary(lib);
+    const tool = b.dependency("w2c2", .{});
+    const builder = b.addRunArtifact(tool.artifact("w2c2"));
+    builder.addArg("-m");
+    builder.addArg("-D");
+    builder.addFileArg(src);
+    const rd = builder.addOutputDirectoryArg(lib.name);
+    result.addIncludePath(rd);
+    result.addCSourceFile(.{ .file = rd.path(b, "/result.c") });
+    return result;
+}
